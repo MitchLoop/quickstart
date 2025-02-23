@@ -47,12 +47,12 @@ const Header = () => {
           ) : /* message if backend is running and there is no link token */
           linkToken == null && backend ? (
             <Callout warning>
-              <div>
+              <span>
                 Unable to fetch link_token: please make sure your backend server
                 is running and that your .env file has been configured
                 correctly.
-              </div>
-              <div>
+              </span>
+              <span style={{ display: 'block', marginTop: '10px' }}>
                 If you are on a Windows machine, please ensure that you have
                 cloned the repo with{" "}
                 <InlineLink
@@ -69,14 +69,14 @@ const Header = () => {
                   activity log
                 </InlineLink>{" "}
                 on your Plaid dashboard.
-              </div>
-              <div>
+              </span>
+              <span style={{ display: 'block', marginTop: '10px' }}>
                 Error Code: <code>{linkTokenError.error_code}</code>
-              </div>
-              <div>
+              </span>
+              <span style={{ display: 'block', marginTop: '10px' }}>
                 Error Type: <code>{linkTokenError.error_type}</code>{" "}
-              </div>
-              <div>Error Message: {linkTokenError.error_message}</div>
+              </span>
+              <span style={{ display: 'block', marginTop: '10px' }}>Error Message: {linkTokenError.error_message}</span>
             </Callout>
           ) : linkToken === "" ? (
             <div className={styles.linkButton}>

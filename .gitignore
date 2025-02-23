@@ -47,7 +47,7 @@ go/quickstart
 docker-compose.local*.yml
 
 *.iml
-.env
+#.env
 .idea
 
 #vscode

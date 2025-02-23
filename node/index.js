@@ -2,6 +2,7 @@
 
 // read env vars from .env file
 require('dotenv').config();
+console.log("Dotenv loaded from", process.cwd()); // Log the current working directory
 const { Configuration, PlaidApi, Products, PlaidEnvironments, CraCheckReportProduct } = require('plaid');
 const util = require('util');
 const { v4: uuidv4 } = require('uuid');
@@ -9,6 +10,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const moment = require('moment');
 const cors = require('cors');
+const fs = require('fs');
 
 const APP_PORT = process.env.APP_PORT || 8000;
 const PLAID_CLIENT_ID = process.env.PLAID_CLIENT_ID;
@@ -37,7 +39,7 @@ const PLAID_COUNTRY_CODES = (process.env.PLAID_COUNTRY_CODES || 'US').split(
 // that the bank website should redirect to. You will need to configure
 // this redirect URI for your client ID through the Plaid developer dashboard
 // at https://dashboard.plaid.com/team/api.
-const PLAID_REDIRECT_URI = process.env.PLAID_REDIRECT_URI || '';
+const PLAID_REDIRECT_URI = 'http://localhost:3000';
 
 // Parameter used for OAuth in Android. This should be the package name of your app,
 // e.g. com.plaid.linksample
@@ -49,6 +51,8 @@ let ACCESS_TOKEN = null;
 let USER_TOKEN = null;
 let PUBLIC_TOKEN = null;
 let ITEM_ID = null;
+const db = require('./db');
+
 let ACCOUNT_ID = null;
 // The payment_id is only relevant for the UK/EU Payment Initiation product.
 // We store the payment_id in memory - in production, store it in a secure
@@ -85,57 +89,71 @@ app.use(
 app.use(bodyParser.json());
 app.use(cors());
 
-app.post('/api/info', function (request, response, next) {
-  response.json({
-    item_id: ITEM_ID,
-    access_token: ACCESS_TOKEN,
-    products: PLAID_PRODUCTS,
-  });
+app.post('/api/info', async function (request, response, next) {
+  try {
+    const tokens = await db.getTokens();
+    response.json({
+      item_id: tokens?.item_id || ITEM_ID || null,
+      access_token: tokens?.access_token || ACCESS_TOKEN || null,
+      products: PLAID_PRODUCTS,
+      country_codes: PLAID_COUNTRY_CODES,
+      redirect_uri: 'http://localhost:3000',
+      android_package_name: PLAID_ANDROID_PACKAGE_NAME
+    });
+  } catch (error) {
+    console.error('Error in /api/info:', error);
+    next(error);
+  }
 });
 
 // Create a link token with configs which we can then use to initialize Plaid Link client-side.
 // See https://plaid.com/docs/#create-link-token
-app.post('/api/create_link_token', function (request, response, next) {
-  Promise.resolve()
-    .then(async function () {
-      const configs = {
-        user: {
-          // This should correspond to a unique id for the current user.
-          client_user_id: 'user-id',
-        },
-        client_name: 'Plaid Quickstart',
-        products: PLAID_PRODUCTS,
-        country_codes: PLAID_COUNTRY_CODES,
-        language: 'en',
+app.post('/api/create_link_token', async (req, res, next) => {
+  try {
+    if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET) {
+      return res.status(500).json({
+        error: 'Missing Plaid credentials in environment variables'
+      });
+    }
+
+    const configs = {
+      user: {
+        client_user_id: 'user_' + uuidv4(),
+      },
+      client_name: 'Plaid Quickstart',
+      products: PLAID_PRODUCTS,
+      country_codes: PLAID_COUNTRY_CODES,
+      language: 'en',
+    };
+
+    if (PLAID_REDIRECT_URI) {
+      configs.redirect_uri = PLAID_REDIRECT_URI;
+    }
+
+    if (PLAID_ANDROID_PACKAGE_NAME) {
+      configs.android_package_name = PLAID_ANDROID_PACKAGE_NAME;
+    }
+
+    if (PLAID_PRODUCTS.includes(Products.Statements)) {
+      configs.statements = {
+        end_date: moment().format('YYYY-MM-DD'),
+        start_date: moment().subtract(30, 'days').format('YYYY-MM-DD'),
       };
+    }
 
-      if (PLAID_REDIRECT_URI !== '') {
-        configs.redirect_uri = PLAID_REDIRECT_URI;
-      }
+    if (PLAID_PRODUCTS.some(product => product.startsWith('cra_'))) {
+      configs.user_token = USER_TOKEN;
+      configs.cra_options = { days_requested: 60 };
+      configs.consumer_report_permissible_purpose = 'ACCOUNT_REVIEW_CREDIT';
+    }
 
-      if (PLAID_ANDROID_PACKAGE_NAME !== '') {
-        configs.android_package_name = PLAID_ANDROID_PACKAGE_NAME;
-      }
-      if (PLAID_PRODUCTS.includes(Products.Statements)) {
-        const statementConfig = {
-          end_date: moment().format('YYYY-MM-DD'),
-          start_date: moment().subtract(30, 'days').format('YYYY-MM-DD'),
-        }
-        configs.statements = statementConfig;
-      }
-
-      if (PLAID_PRODUCTS.some(product => product.startsWith("cra_"))) {
-        configs.user_token = USER_TOKEN;
-        configs.cra_options = {
-          days_requested: 60
-        };
-        configs.consumer_report_permissible_purpose = 'ACCOUNT_REVIEW_CREDIT';
-      }
-      const createTokenResponse = await client.linkTokenCreate(configs);
-      prettyPrintResponse(createTokenResponse);
-      response.json(createTokenResponse.data);
-    })
-    .catch(next);
+    console.log('Creating link token with config:', configs);
+    const createTokenResponse = await client.linkTokenCreate(configs);
+    prettyPrintResponse(createTokenResponse);
+    res.json(createTokenResponse.data);
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Create a user token which can be used for Plaid Check, Income, or Multi-Item link flows
@@ -169,7 +187,6 @@ app.post('/api/create_user_token', function (request, response, next) {
       response.json(user.data);
     }).catch(next);
 });
-
 
 // Create a link token with configs which we can then use to initialize Plaid Link client-side
 // for a 'payment-initiation' flow.
@@ -243,23 +260,39 @@ app.post(
 // an API access_token
 // https://plaid.com/docs/#exchange-token-flow
 app.post('/api/set_access_token', function (request, response, next) {
+  if (!request.body.public_token) {
+    return response.status(400).json({ error: 'Missing public_token in request body' });
+  }
+  
   PUBLIC_TOKEN = request.body.public_token;
   Promise.resolve()
     .then(async function () {
       const tokenResponse = await client.itemPublicTokenExchange({
         public_token: PUBLIC_TOKEN,
       });
-      prettyPrintResponse(tokenResponse);
-      ACCESS_TOKEN = tokenResponse.data.access_token;
-      ITEM_ID = tokenResponse.data.item_id;
+      
+      if (!tokenResponse || !tokenResponse.data) {
+        throw new Error('Invalid token response from Plaid');
+      }
+      
+      await db.saveTokens(
+        tokenResponse.data.access_token,
+        tokenResponse.data.item_id,
+        tokenResponse.data.user_token,
+        PUBLIC_TOKEN,
+      );
+      
+      const tokens = await db.getTokens();
       response.json({
-        // the 'access_token' is a private token, DO NOT pass this token to the frontend in your production environment
-        access_token: ACCESS_TOKEN,
-        item_id: ITEM_ID,
+        access_token: tokenResponse.data.access_token,
+        item_id: tokenResponse.data.item_id,
         error: null,
       });
     })
-    .catch(next);
+    .catch((err) => {
+      console.error('Error in /api/set_access_token:', err);
+      response.status(500).json({ error: err.message });
+    });
 });
 
 // Retrieve ACH or ETF Auth data for an Item's accounts
@@ -552,8 +585,37 @@ app.get('/api/income/verification/paystubs', function (request, response, next) 
     .catch(next);
 })
 
-const server = app.listen(APP_PORT, function () {
-  console.log('plaid-quickstart server listening on port ' + APP_PORT);
+// Add this new endpoint to view database contents
+app.get('/api/db/tokens', function (request, response, next) {
+  console.log('Accessing /api/db/tokens endpoint');
+  Promise.resolve()
+    .then(async function () {
+      console.log('Getting tokens from database...');
+      const tokens = await db.getAllTokens();
+      console.log('Retrieved tokens:', tokens);
+      response.json(tokens || []);
+    })
+    .catch((error) => {
+      console.error('Error accessing database:', error);
+      next(error);
+    });
+});
+
+// Handle favicon.ico requests
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end();
+});
+
+// Error handler should be last
+app.use('/api', function (error, request, response, next) {
+  console.log(error);
+  prettyPrintResponse(error.response);
+  response.json(formatError(error.response));
+});
+
+// Start the server
+app.listen(APP_PORT, () => {
+  console.log('Server running on port', APP_PORT);
 });
 
 const prettyPrintResponse = (response) => {
@@ -622,6 +684,7 @@ app.get('/api/transfer_authorize', function (request, response, next) {
     .catch(next);
 });
 
+// ... rest of the code remains the same ....tables
 
 app.get('/api/transfer_create', function (request, response, next) {
   Promise.resolve()
@@ -791,8 +854,7 @@ const pollWithRetries = (
       });
   });
 
-app.use('/api', function (error, request, response, next) {
-  console.log(error);
-  prettyPrintResponse(error.response);
-  response.json(formatError(error.response));
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: err.message });
 });

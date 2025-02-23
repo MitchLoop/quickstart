@@ -26,6 +26,7 @@
   },
   "devDependencies": {
     "@types/classnames": "^2.2.11",
+    "cross-env": "^7.0.3",
     "react-scripts": "^5.0.1"
   },
   "peerDependencies": {
@@ -66,5 +67,6 @@
   },
   "engines": {
     "node": ">=14.0.0"
-  }
+  },
+  "proxy": "http://localhost:8000"
 }

@@ -12,12 +12,28 @@ const App = () => {
   const { linkSuccess, isPaymentInitiation, itemId, dispatch } =
     useContext(Context);
 
-  const getInfo = useCallback(async () => {
-    const response = await fetch("/api/info", { method: "POST" });
-    if (!response.ok) {
-      dispatch({ type: "SET_STATE", state: { backend: false } });
-      return { paymentInitiation: false };
-    }
+    const getInfo = useCallback(async () => {
+      try {
+        console.log('Fetching API info...');
+        const response = await fetch("/api/info", { method: "POST" });
+        console.log('API info response status:', response.status);
+        
+        const data = await response.json();
+        console.log('API info response data:', data);
+        
+        if (!response.ok) {
+          dispatch({ type: "SET_STATE", state: { backend: false } });
+        }
+        return data;
+      } catch (error) {
+        console.error('API info fetch failed:', error);
+        dispatch({ type: "SET_STATE", state: { backend: false } });
+        return { paymentInitiation: false };
+      }
+    }, [dispatch]);
+
+  const getProducts = useCallback(async () => {
+    const response = await fetch("/api/products", { method: "POST" });
     const data = await response.json();
     const paymentInitiation: boolean =
       data.products.includes("payment_initiation");
