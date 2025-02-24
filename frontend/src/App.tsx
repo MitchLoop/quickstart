@@ -3,6 +3,7 @@ import React, { useEffect, useContext, useCallback } from "react";
 import Header from "./Components/Headers";
 import Products from "./Components/ProductTypes/Products";
 import Items from "./Components/ProductTypes/Items";
+import PlaidLink from "./Components/PlaidLink";
 import Context from "./Context";
 
 import styles from "./App.module.scss";
@@ -12,25 +13,25 @@ const App = () => {
   const { linkSuccess, isPaymentInitiation, itemId, dispatch } =
     useContext(Context);
 
-    const getInfo = useCallback(async () => {
-      try {
-        console.log('Fetching API info...');
-        const response = await fetch("/api/info", { method: "POST" });
-        console.log('API info response status:', response.status);
-        
-        const data = await response.json();
-        console.log('API info response data:', data);
-        
-        if (!response.ok) {
-          dispatch({ type: "SET_STATE", state: { backend: false } });
-        }
-        return data;
-      } catch (error) {
-        console.error('API info fetch failed:', error);
+  const getInfo = useCallback(async () => {
+    try {
+      console.log('Fetching API info...');
+      const response = await fetch("/api/info", { method: "POST" });
+      console.log('API info response status:', response.status);
+      
+      const data = await response.json();
+      console.log('API info response data:', data);
+      
+      if (!response.ok) {
         dispatch({ type: "SET_STATE", state: { backend: false } });
-        return { paymentInitiation: false };
       }
-    }, [dispatch]);
+      return data;
+    } catch (error) {
+      console.error('API info fetch failed:', error);
+      dispatch({ type: "SET_STATE", state: { backend: false } });
+      return { paymentInitiation: false };
+    }
+  }, [dispatch]);
 
   const getProducts = useCallback(async () => {
     const response = await fetch("/api/products", { method: "POST" });
@@ -112,6 +113,14 @@ const App = () => {
     [dispatch]
   );
 
+  const handlePlaidSuccess = useCallback((publicToken: string) => {
+    dispatch({ type: "SET_STATE", state: { linkSuccess: true } });
+  }, [dispatch]);
+
+  const handlePlaidExit = useCallback(() => {
+    console.log("Link exit");
+  }, []);
+
   useEffect(() => {
     const init = async () => {
       const { paymentInitiation, isUserTokenFlow } = await getInfo(); // used to determine which path to take when generating token
@@ -139,10 +148,13 @@ const App = () => {
     <div className={styles.App}>
       <div className={styles.container}>
         <Header />
+        {!linkSuccess && (
+          <PlaidLink onSuccess={handlePlaidSuccess} onExit={handlePlaidExit} />
+        )}
         {linkSuccess && (
           <>
             <Products />
-            {!isPaymentInitiation && itemId && <Items />}
+            <Items />
           </>
         )}
       </div>

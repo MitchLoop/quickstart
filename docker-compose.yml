@@ -16,6 +16,11 @@ services:
       context: .
       dockerfile: ./node/Dockerfile
     ports: ["8000:8000"]
+    volumes:
+      - type: bind
+        source: ./node/data
+        target: /app/data
+        consistency: delegated
     environment:
       <<: *QUICKSTART_ENVIRONMENT
   

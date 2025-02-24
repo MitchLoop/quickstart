@@ -48,8 +48,6 @@ const PLAID_ANDROID_PACKAGE_NAME = process.env.PLAID_ANDROID_PACKAGE_NAME || '';
 // We store the access_token in memory - in production, store it in a secure
 // persistent data store
 let ACCESS_TOKEN = null;
-let USER_TOKEN = null;
-let PUBLIC_TOKEN = null;
 let ITEM_ID = null;
 const db = require('./db');
 
@@ -89,71 +87,75 @@ app.use(
 app.use(bodyParser.json());
 app.use(cors());
 
-app.post('/api/info', async function (request, response, next) {
-  try {
-    const tokens = await db.getTokens();
-    response.json({
-      item_id: tokens?.item_id || ITEM_ID || null,
-      access_token: tokens?.access_token || ACCESS_TOKEN || null,
-      products: PLAID_PRODUCTS,
-      country_codes: PLAID_COUNTRY_CODES,
-      redirect_uri: 'http://localhost:3000',
-      android_package_name: PLAID_ANDROID_PACKAGE_NAME
-    });
-  } catch (error) {
-    console.error('Error in /api/info:', error);
-    next(error);
-  }
+app.post('/api/info', function (request, response, next) {
+  response.json({
+    item_id: ITEM_ID,
+    access_token: ACCESS_TOKEN,
+    products: PLAID_PRODUCTS
+  });
 });
 
-// Create a link token with configs which we can then use to initialize Plaid Link client-side.
-// See https://plaid.com/docs/#create-link-token
-app.post('/api/create_link_token', async (req, res, next) => {
-  try {
-    if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET) {
-      return res.status(500).json({
-        error: 'Missing Plaid credentials in environment variables'
-      });
-    }
-
-    const configs = {
-      user: {
-        client_user_id: 'user_' + uuidv4(),
-      },
-      client_name: 'Plaid Quickstart',
-      products: PLAID_PRODUCTS,
-      country_codes: PLAID_COUNTRY_CODES,
-      language: 'en',
-    };
-
-    if (PLAID_REDIRECT_URI) {
-      configs.redirect_uri = PLAID_REDIRECT_URI;
-    }
-
-    if (PLAID_ANDROID_PACKAGE_NAME) {
-      configs.android_package_name = PLAID_ANDROID_PACKAGE_NAME;
-    }
-
-    if (PLAID_PRODUCTS.includes(Products.Statements)) {
-      configs.statements = {
-        end_date: moment().format('YYYY-MM-DD'),
-        start_date: moment().subtract(30, 'days').format('YYYY-MM-DD'),
+app.post('/api/create_link_token', function (request, response, next) {
+  Promise.resolve()
+    .then(async function () {
+      const configs = {
+        user: {
+          // This should correspond to a unique id for the current user.
+          client_user_id: 'user-id',
+        },
+        client_name: 'Plaid Quickstart',
+        products: PLAID_PRODUCTS,
+        country_codes: PLAID_COUNTRY_CODES,
+        language: 'en',
       };
-    }
 
-    if (PLAID_PRODUCTS.some(product => product.startsWith('cra_'))) {
-      configs.user_token = USER_TOKEN;
-      configs.cra_options = { days_requested: 60 };
-      configs.consumer_report_permissible_purpose = 'ACCOUNT_REVIEW_CREDIT';
-    }
+      if (PLAID_REDIRECT_URI !== '') {
+        configs.redirect_uri = PLAID_REDIRECT_URI;
+      }
 
-    console.log('Creating link token with config:', configs);
-    const createTokenResponse = await client.linkTokenCreate(configs);
-    prettyPrintResponse(createTokenResponse);
-    res.json(createTokenResponse.data);
-  } catch (error) {
-    next(error);
-  }
+      if (PLAID_ANDROID_PACKAGE_NAME !== '') {
+        configs.android_package_name = PLAID_ANDROID_PACKAGE_NAME;
+      }
+      const createTokenResponse = await client.linkTokenCreate(configs);
+      prettyPrintResponse(createTokenResponse);
+      response.json(createTokenResponse.data);
+    })
+    .catch(next);
+});
+
+// Exchange token flow - exchange a Link public_token for an API access_token
+app.post('/api/set_access_token', function (request, response, next) {
+  Promise.resolve()
+    .then(async function () {
+      const publicToken = request.body.public_token;
+      const tokenResponse = await client.itemPublicTokenExchange({
+        public_token: publicToken,
+      });
+      prettyPrintResponse(tokenResponse);
+      ACCESS_TOKEN = tokenResponse.data.access_token;
+      ITEM_ID = tokenResponse.data.item_id;
+      
+      // Store the access token in the database
+      const db = require('./db');
+      try {
+        await db.saveTokens({
+          access_token: ACCESS_TOKEN,
+          item_id: ITEM_ID,
+          public_token: publicToken
+        });
+        console.log('Tokens saved successfully:', { access_token: ACCESS_TOKEN, item_id: ITEM_ID });
+      } catch (error) {
+        console.error('Error saving tokens:', error);
+        throw error;
+      }
+      
+      response.json({
+        access_token: ACCESS_TOKEN,
+        item_id: ITEM_ID,
+        error: null,
+      });
+    })
+    .catch(next);
 });
 
 // Create a user token which can be used for Plaid Check, Income, or Multi-Item link flows
@@ -183,7 +185,7 @@ app.post('/api/create_user_token', function (request, response, next) {
         }
       }
       const user = await client.userCreate(request);
-      USER_TOKEN = user.data.user_token
+      const USER_TOKEN = user.data.user_token
       response.json(user.data);
     }).catch(next);
 });
@@ -255,45 +257,6 @@ app.post(
       .catch(next);
   },
 );
-
-// Exchange token flow - exchange a Link public_token for
-// an API access_token
-// https://plaid.com/docs/#exchange-token-flow
-app.post('/api/set_access_token', function (request, response, next) {
-  if (!request.body.public_token) {
-    return response.status(400).json({ error: 'Missing public_token in request body' });
-  }
-  
-  PUBLIC_TOKEN = request.body.public_token;
-  Promise.resolve()
-    .then(async function () {
-      const tokenResponse = await client.itemPublicTokenExchange({
-        public_token: PUBLIC_TOKEN,
-      });
-      
-      if (!tokenResponse || !tokenResponse.data) {
-        throw new Error('Invalid token response from Plaid');
-      }
-      
-      await db.saveTokens(
-        tokenResponse.data.access_token,
-        tokenResponse.data.item_id,
-        tokenResponse.data.user_token,
-        PUBLIC_TOKEN,
-      );
-      
-      const tokens = await db.getTokens();
-      response.json({
-        access_token: tokenResponse.data.access_token,
-        item_id: tokenResponse.data.item_id,
-        error: null,
-      });
-    })
-    .catch((err) => {
-      console.error('Error in /api/set_access_token:', err);
-      response.status(500).json({ error: err.message });
-    });
-});
 
 // Retrieve ACH or ETF Auth data for an Item's accounts
 // https://plaid.com/docs/#auth
@@ -399,16 +362,32 @@ app.get('/api/identity', function (request, response, next) {
 
 // Retrieve real-time Balances for each of an Item's accounts
 // https://plaid.com/docs/#balance
-app.get('/api/balance', function (request, response, next) {
-  Promise.resolve()
-    .then(async function () {
-      const balanceResponse = await client.accountsBalanceGet({
-        access_token: ACCESS_TOKEN,
-      });
-      prettyPrintResponse(balanceResponse);
-      response.json(balanceResponse.data);
-    })
-    .catch(next);
+app.get('/api/balance', async function (request, response, next) {
+  try {
+    let accessToken = ACCESS_TOKEN; // First check memory
+
+    if (!accessToken) {
+      // If not in memory, try database
+      const tokens = await db.getTokens();
+      if (tokens && tokens.access_token) {
+        accessToken = tokens.access_token;
+      }
+    }
+
+    if (!accessToken) {
+      throw new Error('No access token found. Please connect your bank account first.');
+    }
+
+    const balanceResponse = await client.accountsBalanceGet({
+      access_token: accessToken,
+    });
+    
+    prettyPrintResponse(balanceResponse);
+    response.json(balanceResponse.data);
+  } catch (error) {
+    console.error('Error in /api/balance:', error);
+    next(error);
+  }
 });
 
 // Retrieve Holdings for an Item
